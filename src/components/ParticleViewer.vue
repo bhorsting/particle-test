@@ -7,6 +7,9 @@ import { ref, onMounted, onUnmounted, watch } from 'vue'
 import * as THREE from 'three'
 import { FontLoader } from 'three/examples/jsm/loaders/FontLoader.js'
 import { TextGeometry } from 'three/examples/jsm/geometries/TextGeometry.js'
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 
 interface Props {
   images: string[]
@@ -28,6 +31,7 @@ const containerRef = ref<HTMLElement | null>(null)
 let scene: THREE.Scene
 let camera: THREE.PerspectiveCamera
 let renderer: THREE.WebGLRenderer
+let composer: EffectComposer | null = null
 let currentParticles: THREE.InstancedMesh | null = null
 let nextParticles: THREE.InstancedMesh | null = null
 let currentImageIndex = 0
@@ -35,7 +39,6 @@ let isTransitioning = false
 let animationFrameId: number | null = null
 let autoAdvanceTimer: number | null = null
 let resizeObserver: ResizeObserver | null = null
-let currentImageAspectRatio = 1 // Track current image aspect ratio
 let textMesh: THREE.Mesh | null = null
 let targetCameraZ = 5 // Target camera Z position for smooth interpolation
 let currentCameraZ = 5 // Current camera Z position
@@ -59,7 +62,47 @@ const initScene = () => {
 
   // Scene setup
   scene = new THREE.Scene()
-  scene.background = new THREE.Color(0x000000)
+  scene.background = new THREE.Color(0x330099) // Black background
+  
+  // Create three rotated rectangles for background
+  const rectSize = 12 // Large size to cover background
+  const rotationAngle = 30 * (Math.PI / 180) // 30 degrees in radians
+  
+  // Yellow rectangle
+  const yellowGeometry = new THREE.PlaneGeometry(rectSize, rectSize)
+  const yellowMaterial = new THREE.MeshBasicMaterial({ 
+    color: 0xffff00,
+    transparent: true,
+    opacity: 0.5
+  })
+  const yellowRect = new THREE.Mesh(yellowGeometry, yellowMaterial)
+  yellowRect.rotation.z = rotationAngle
+  yellowRect.position.set(-2, 1, -18) // Different z position to avoid z-fighting
+  scene.add(yellowRect)
+  
+  // Pink rectangle
+  const pinkGeometry = new THREE.PlaneGeometry(rectSize, rectSize)
+  const pinkMaterial = new THREE.MeshBasicMaterial({ 
+    color: 0xff00ff,
+    transparent: true,
+    opacity: 0.5
+  })
+  const pinkRect = new THREE.Mesh(pinkGeometry, pinkMaterial)
+  pinkRect.rotation.z = rotationAngle
+  pinkRect.position.set(0, 0, -20) // Middle z position
+  scene.add(pinkRect)
+  
+  // Cyan rectangle
+  const cyanGeometry = new THREE.PlaneGeometry(rectSize, rectSize)
+  const cyanMaterial = new THREE.MeshBasicMaterial({ 
+    color: 0x00ffff,
+    transparent: true,
+    opacity: 0.5
+  })
+  const cyanRect = new THREE.Mesh(cyanGeometry, cyanMaterial)
+  cyanRect.rotation.z = rotationAngle
+  cyanRect.position.set(2, -1, -22) // Furthest back
+  scene.add(cyanRect)
   
   // Add directional light for shadows (positioned above the text)
   const directionalLight = new THREE.DirectionalLight(0xffffff, 1)
@@ -88,7 +131,7 @@ const initScene = () => {
 
   // Camera setup
   camera = new THREE.PerspectiveCamera(
-    10,
+    5,
     window.innerWidth / window.innerHeight,
     0.1,
     1000
@@ -105,6 +148,22 @@ const initScene = () => {
   renderer.shadowMap.enabled = true
   renderer.shadowMap.type = THREE.PCFSoftShadowMap // Soft shadows
   containerRef.value.appendChild(renderer.domElement)
+  
+  // Setup post-processing for glow effect
+  composer = new EffectComposer(renderer)
+  
+  // Add render pass
+  const renderPass = new RenderPass(scene, camera)
+  composer.addPass(renderPass)
+  
+  // Add bloom/glow pass
+  const bloomPass = new UnrealBloomPass(
+    new THREE.Vector2(window.innerWidth, window.innerHeight),
+    0.1, // strength
+    0.4, // radius
+    0.3 // threshold - lower threshold means more things will glow
+  )
+  composer.addPass(bloomPass)
 
   // Handle window resize
   window.addEventListener('resize', handleResize)
@@ -146,12 +205,13 @@ const create3DText = () => {
     '/fonts/font_sans.json',
     (font) => {
       // Create text geometry
-      const textGeometry = new TextGeometry('Bas Horsting', {
+      const textGeometry = new TextGeometry('BAS HORSTING', {
         font: font,
         size: 0.10, // Size relative to the scene
         depth: 0, // Depth/extrusion
         curveSegments: 12,
-        bevelEnabled: false
+        bevelEnabled: false,
+        
       })
 
       
@@ -167,9 +227,11 @@ const create3DText = () => {
       const textMaterial = new THREE.MeshStandardMaterial({
         color: 0xffffff,
         transparent: true,
-        opacity: 0.9,
+        opacity: 0.8,
         metalness: 0.1,
-        roughness: 0.3
+        roughness: 0.3,
+        emissive: new THREE.Color(0xffff66), // Make text emissive for glow
+        emissiveIntensity: 0.5 // Strong glow on text
       })
       
       // Create mesh
@@ -196,66 +258,110 @@ const create3DText = () => {
 
 // Calculate camera position to fill screen with particles
 const updateCameraForParticles = () => {
-  if (!camera || !currentParticles) return
+  if (!camera || !currentParticles || isTransitioning) return
 
-  // Get screen aspect ratio
-  const screenAspect = window.innerWidth / window.innerHeight
-  // Get image aspect ratio
-  const imageAspect = currentImageAspectRatio
+  // Use originalPositions from userData instead of current positions
+  // This ensures we calculate based on final positions, not animated ones
+  const userData = (currentParticles as any).userData
+  if (!userData || !userData.originalPositions) {
+    // Fallback: use bounding box if userData not available
+    const box = new THREE.Box3()
+    box.setFromObject(currentParticles)
+    if (box.isEmpty()) {
+      targetCameraZ = 5
+      return
+    }
+    const size = box.getSize(new THREE.Vector3())
+    if (size.x <= 0 || size.y <= 0 || !isFinite(size.x) || !isFinite(size.y)) {
+      targetCameraZ = 5
+      return
+    }
+    const screenAspect = window.innerWidth / window.innerHeight
+    const fovRad = camera.fov * (Math.PI / 180)
+    const halfFovRad = fovRad / 2
+    const tanHalfFov = halfFovRad
+    const distanceForWidth = (size.x / 2) / (tanHalfFov * screenAspect)
+    const distanceForHeight = (size.y / 2) / tanHalfFov
+    const distance = Math.min(distanceForWidth, distanceForHeight)
+    if (!isFinite(distance) || distance <= 0 || distance > 1000) {
+      targetCameraZ = 5
+      return
+    }
+    targetCameraZ = distance * 0.05
+    // Don't call lookAt here - it resets rotation
+    camera.updateProjectionMatrix()
+    return
+  }
+
+  // Calculate bounding box from original positions (final positions)
+  const originalPositions = userData.originalPositions as number[]
+  const count = userData.count as number
   
-  const fov = camera.fov * (Math.PI / 180) // Convert to radians
+  if (count === 0 || originalPositions.length === 0) {
+    targetCameraZ = 5
+    return
+  }
+
+  // Find min/max from original positions
+  let minX = Infinity, maxX = -Infinity
+  let minY = Infinity, maxY = -Infinity
+  let minZ = Infinity, maxZ = -Infinity
   
-  // Particles are drawn on a 1600x1600 square canvas, normalized to -1 to 1 in both dimensions
-  // The actual image is centered and scaled to fit within this canvas
-  // 
-  // If imageAspect > 1 (wide image): image fills full width, height is smaller
-  //   - Image spans full -1 to 1 in X
-  //   - Image spans -1/imageAspect to 1/imageAspect in Y
-  //
-  // If imageAspect < 1 (tall image): image fills full height, width is smaller
-  //   - Image spans -imageAspect to imageAspect in X
-  //   - Image spans full -1 to 1 in Y
-  
-  let distance: number
-  
-  // Determine which dimension constrains the view
-  // We need to ensure the image content fills the screen
-  if (imageAspect >= screenAspect) {
-    // Image is wider than screen (or same)
-    // Image fills full width of canvas (-1 to 1 in X)
-    // Need to ensure this width fills the screen width
-    // Visible width = 2 * distance * tan(fov/2) * screenAspect
-    // We want visible width = 2 (full canvas width)
-    // So: 2 = 2 * distance * tan(fov/2) * screenAspect
-    // distance = 1 / (tan(fov/2) * screenAspect)
-    distance = 1 / (Math.tan(fov / 2) * screenAspect)
-  } else {
-    // Image is taller than screen
-    // Image fills full height of canvas (-1 to 1 in Y)
-    // But image width is smaller: -imageAspect to imageAspect in X
-    // We need to zoom in so the image width fills the screen width
-    // 
-    // Screen width at distance = 2 * distance * tan(fov/2) * screenAspect
-    // Image width in canvas = 2 * imageAspect
-    // We want: screen width = image width * scale
-    // But we're working in normalized coordinates, so:
-    // We want the visible width to show exactly the image width
-    // 
-    // If we use height-based calculation, we get:
-    // distance = 1 / tan(fov/2)  (this makes height -1 to 1 visible)
-    // At this distance, visible width = 2 * (1/tan(fov/2)) * tan(fov/2) * screenAspect = 2 * screenAspect
-    // But image width is only 2 * imageAspect
-    // So we need to zoom in by factor: screenAspect / imageAspect
-    const zoomFactor = screenAspect / imageAspect
-    distance = (1 / Math.tan(fov / 2)) / zoomFactor
+  for (let i = 0; i < count; i++) {
+    const x = originalPositions[i * 3] ?? 0
+    const y = originalPositions[i * 3 + 1] ?? 0
+    const z = originalPositions[i * 3 + 2] ?? 0
+    
+    minX = Math.min(minX, x)
+    maxX = Math.max(maxX, x)
+    minY = Math.min(minY, y)
+    maxY = Math.max(maxY, y)
+    minZ = Math.min(minZ, z)
+    maxZ = Math.max(maxZ, z)
   }
   
-  // Zoom in more to ensure ALL pixels are filled with particles
-  // Reduce distance by a factor to zoom in (smaller distance = closer = more zoomed in)
-  // Set target Z instead of directly setting camera position (for smooth interpolation)
+  const size = new THREE.Vector3(maxX - minX, maxY - minY, maxZ - minZ)
+  
+  // Safety check: if size is too small or invalid, use fallback
+  if (size.x <= 0 || size.y <= 0 || !isFinite(size.x) || !isFinite(size.y)) {
+    targetCameraZ = 5
+    return
+  }
+  
+  // Get screen aspect ratio
+  const screenAspect = window.innerWidth / window.innerHeight
+  const fovRad = camera.fov * (Math.PI / 180) // Convert to radians
+  const halfFovRad = fovRad / 2
+  
+  // Simple approximation: tan(x) ≈ x for small angles (good for camera FOV)
+  const tanHalfFov = halfFovRad
+  
+  // Calculate the visible width and height at a given distance
+  // visibleWidth = 2 * distance * tan(fov/2) * screenAspect
+  // visibleHeight = 2 * distance * tan(fov/2)
+  
+  // For fill-box: we want the bounding box to fill the entire screen
+  // Calculate required distance for width and height separately
+  const distanceForWidth = (size.x / 2) / (tanHalfFov * screenAspect)
+  const distanceForHeight = (size.y / 2) / tanHalfFov
+  
+  // Use the smaller distance to ensure the bounding box fills the screen
+  // (smaller distance = closer camera = larger apparent size = fills screen)
+  // This ensures that if a horizontal cloud is shown on a vertical screen,
+  // it will scale up to fill from top to bottom
+  const distance = Math.min(distanceForWidth, distanceForHeight)
+  
+  // Safety check: ensure distance is valid and reasonable
+  if (!isFinite(distance) || distance <= 0 || distance > 1000) {
+    targetCameraZ = 5
+    return
+  }
+  
+  // Add some padding and set target Z
   targetCameraZ = distance * 0.5
   
-  camera.lookAt(0, 0, 0)
+  // Don't call lookAt here - it resets rotation
+  // Rotation is handled in the animate loop via camera.position
   camera.updateProjectionMatrix()
 }
 
@@ -264,6 +370,9 @@ const handleResize = () => {
   camera.aspect = window.innerWidth / window.innerHeight
   camera.updateProjectionMatrix()
   renderer.setSize(window.innerWidth, window.innerHeight)
+  if (composer) {
+    composer.setSize(window.innerWidth, window.innerHeight)
+  }
   updateCameraForParticles()
 }
 
@@ -308,9 +417,6 @@ const imageToParticles = async (imageUrl: string): Promise<THREE.InstancedMesh> 
       }
       
       const imgAspect = imgWidth / imgHeight
-      
-      // Store image aspect ratio for camera calculation
-      currentImageAspectRatio = imgAspect
       
       // Calculate scale to fit image completely within canvas (maintaining aspect ratio)
       let drawWidth: number
@@ -413,8 +519,8 @@ const imageToParticles = async (imageUrl: string): Promise<THREE.InstancedMesh> 
 
       const particleCount = positions.length / 3
       
-      // Create a single plane geometry that will be instanced
-      const planeGeometry = new THREE.PlaneGeometry(0.01, 0.01) // Small plane size
+      // Create a single circle geometry that will be instanced
+      const planeGeometry = new THREE.CircleGeometry(0.006, 6) // Small circle with 8 segments
       
       // Create instance colors array
       const instanceColors = new Float32Array(particleCount * 3)
@@ -435,7 +541,9 @@ const imageToParticles = async (imageUrl: string): Promise<THREE.InstancedMesh> 
         vertexColors: true,
         transparent: true,
         opacity: 0.9,
-        side: THREE.DoubleSide
+        side: THREE.DoubleSide,
+        emissive: new THREE.Color(0x000000), // Base emissive
+        emissiveIntensity: 0.2 // Add some emissive glow
       })
       
       // Inject instanceColor support into the standard material shader
@@ -836,7 +944,7 @@ const animate = () => {
   // Shadow maps are automatically handled by Three.js with standard materials
 
   // Smooth interpolation for camera zoom
-  const zoomLerpFactor = 0.1 // Smooth interpolation speed for zoom
+  const zoomLerpFactor = 0.01 // Smooth interpolation speed for zoom
   currentCameraZ += (targetCameraZ - currentCameraZ) * zoomLerpFactor
 
   // Smooth interpolation for mouse-based rotation
@@ -845,25 +953,26 @@ const animate = () => {
   currentRotationY += (targetRotationY - currentRotationY) * lerpFactor
 
   // Apply rotation to camera (but maintain zoom level)
-  if (currentParticles && !isTransitioning) {
-    // Combine mouse rotation with subtle automatic rotation
-    const autoRotateX = Math.sin(Date.now() * 0.0001) * 0.5
-    const autoRotateY = Math.cos(Date.now() * 0.0001) * 0.5
-    
-    // Apply mouse rotation to camera position
-    camera.position.x = autoRotateX + currentRotationY * 2
-    camera.position.y = autoRotateY + currentRotationX * 2
-    camera.position.z = currentCameraZ // Use smoothly interpolated zoom
-    camera.lookAt(0, 0, 0)
-  } else {
-    // When transitioning, still apply mouse rotation but more subtly
-    camera.position.x = currentRotationY * 2
-    camera.position.y = currentRotationX * 2
-    camera.position.z = currentCameraZ // Use smoothly interpolated zoom
-    camera.lookAt(0, 0, 0)
-  }
+  // Always apply rotation, regardless of transition state
+  const autoRotateX = Math.sin(Date.now() * 0.0001) * 2
+  const autoRotateY = Math.cos(Date.now() * 0.0001) * 2
+  
+  // Apply mouse rotation to camera position (always maintain rotation)
+  // The rotation values are preserved in currentRotationX/Y and smoothly interpolated
+  camera.position.x = autoRotateX + currentRotationY * 2
+  camera.position.y = autoRotateY + currentRotationX * 2
+  camera.position.z = currentCameraZ // Use smoothly interpolated zoom
+  
+  // LookAt recalculates rotation based on position, so rotation is maintained
+  // as long as currentRotationX/Y values don't get reset
+  camera.lookAt(0, 0, 0)
 
-  renderer.render(scene, camera)
+  // Use composer for post-processing (glow effect) if available, otherwise render normally
+  if (composer) {
+    composer.render()
+  } else {
+    renderer.render(scene, camera)
+  }
   animationFrameId = requestAnimationFrame(animate)
 }
 
@@ -920,6 +1029,10 @@ onUnmounted(() => {
     resizeObserver = null
   }
   
+  if (composer) {
+    composer.dispose()
+    composer = null
+  }
   if (renderer) {
     renderer.dispose()
   }
