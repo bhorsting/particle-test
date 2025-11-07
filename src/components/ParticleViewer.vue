@@ -45,6 +45,8 @@ let cvTextMesh: THREE.Mesh | null = null
 let contactTextMesh: THREE.Mesh | null = null
 let emailTextMesh: THREE.Mesh | null = null
 let showingEmail = false // Track if email is currently shown
+let cvTextMeshes: THREE.Mesh[] = [] // Array to store CV text meshes
+let showingCV = false // Track if CV words are currently shown
 let raycaster: THREE.Raycaster | null = null
 let mouse = new THREE.Vector2()
 let isCameraZoomedOut = false // Track if camera is zoomed out for WORK view
@@ -216,8 +218,15 @@ const initScene = () => {
     mouse.y = -(event.clientY / window.innerHeight) * 2 + 1
     
     raycaster.setFromCamera(mouse, camera)
-    // Include email text mesh in raycasting for click detection
-    const textMeshes = [textMesh, workTextMesh, cvTextMesh, contactTextMesh, emailTextMesh].filter(Boolean) as THREE.Mesh[]
+    // Include email text mesh and CV words in raycasting for click detection
+    const textMeshes = [
+      textMesh, 
+      workTextMesh, 
+      cvTextMesh, 
+      contactTextMesh, 
+      emailTextMesh,
+      ...cvTextMeshes
+    ].filter(Boolean) as THREE.Mesh[]
     const intersects = raycaster.intersectObjects(textMeshes)
     
     if (intersects.length > 0) {
@@ -225,9 +234,12 @@ const initScene = () => {
       
       // BAS HORSTING and WORK both zoom out
       if (clickedMesh === textMesh || clickedMesh === workTextMesh) {
-        // If email is showing, show menu first
+        // If email or CV is showing, show menu first
         if (showingEmail) {
           showMenu()
+        }
+        if (showingCV) {
+          hideCVWords()
         }
         
         // Toggle camera zoom
@@ -243,12 +255,20 @@ const initScene = () => {
       }
       
       // CONTACT shows email, email hides and shows menu
-      if (clickedMesh === contactTextMesh && !showingEmail) {
+      if (clickedMesh === contactTextMesh && !showingEmail && !showingCV) {
         // Hide menu items and show email
         showEmail()
       } else if (clickedMesh === emailTextMesh && showingEmail) {
         // Hide email and show menu items
         showMenu()
+      }
+      
+      // CV shows list of words
+      if (clickedMesh === cvTextMesh && !showingCV && !showingEmail) {
+        showCVWords()
+      } else if (showingCV && clickedMesh && cvTextMeshes.includes(clickedMesh)) {
+        // Clicking any CV word hides CV and shows menu
+        hideCVWords()
       }
     }
   }
@@ -1198,6 +1218,138 @@ const showMenu = () => {
   }
 }
 
+// Show CV words
+const showCVWords = () => {
+  showingCV = true
+  
+  // Hide all existing text
+  const allText = [textMesh, workTextMesh, cvTextMesh, contactTextMesh, emailTextMesh].filter(Boolean) as THREE.Mesh[]
+  if (allText.length > 0) {
+    animateMenuTransition(allText, 0, 0, 300)
+  }
+  
+  // Create CV words if not already created
+  if (cvTextMeshes.length === 0) {
+    createCVWords()
+  }
+  
+  // Show CV words with animation (with a small delay to ensure they're created)
+  setTimeout(() => {
+    if (cvTextMeshes.length > 0) {
+      animateMenuTransition(cvTextMeshes, 0.8, 1, 300)
+    }
+  }, 100)
+}
+
+// Hide CV words and show menu
+const hideCVWords = () => {
+  showingCV = false
+  
+  // Hide CV words
+  if (cvTextMeshes.length > 0) {
+    animateMenuTransition(cvTextMeshes, 0, 0, 300)
+  }
+  
+  // Show main text and menu
+  const mainText = [textMesh].filter(Boolean) as THREE.Mesh[]
+  const menuItems = [workTextMesh, cvTextMesh, contactTextMesh].filter(Boolean) as THREE.Mesh[]
+  
+  if (mainText.length > 0) {
+    animateMenuTransition(mainText, 0.8, 1, 300)
+  }
+  if (menuItems.length > 0) {
+    animateMenuTransition(menuItems, 0.8, 1, 300)
+  }
+}
+
+// Create CV words
+const createCVWords = () => {
+  if (!textMesh) return // Need font to be loaded first
+  
+  const words = [
+    '40 YEARS OF EXPERIENCE IN', 'VUE', 'ANGULAR', 'REACT', 
+    'THREEJS', 'CINEMA4D', 'AFTERFX', 'PHOTOSHOP', 'C++', 'TYPESCRIPT', 'JAVASCRIPT', 
+    'NODEJS', 'C#', 'VIDEO', '3D', 'SOUND', 'MUSIC', 'ESP32', 'ARDUINO', 'RASPBERRY PI', 'ANALOGUE ELECTRONICS', 
+    'DIGITAL ELECTRONICS', 'AI'
+  ]
+  
+  const colors = [
+    0x00ffff, // Cyan
+    0xff00ff, // Magenta
+    0xffff00  // Yellow
+  ]
+  
+  const wordSize = 0.04
+  const spacing = 0.06
+  const wordsPerRow = 4
+  const totalRows = Math.ceil(words.length / wordsPerRow)
+  const totalHeight = (totalRows - 1) * spacing + wordSize
+  const startY = totalHeight / 2 // Center vertically
+  
+  let currentX = -0.6
+  let currentY = startY
+  let colorIndex = 0
+  
+  // Get font from existing text mesh
+  const loader = new FontLoader()
+  loader.load(
+    '/fonts/font_sans.json',
+    (font) => {
+      words.forEach((word, index) => {
+        const wordGeometry = new TextGeometry(word, {
+          font: font,
+          size: wordSize,
+          depth: 0,
+          curveSegments: 12,
+          bevelEnabled: false
+        })
+        wordGeometry.computeBoundingBox()
+        
+        const color = colors[colorIndex]!
+        const wordMaterial = new THREE.MeshStandardMaterial({
+          color: color,
+          transparent: true,
+          opacity: 0, // Start hidden
+          metalness: 0.1,
+          roughness: 0.3,
+          emissive: new THREE.Color(color),
+          emissiveIntensity: 0.5
+        })
+        
+        const wordMesh = new THREE.Mesh(wordGeometry, wordMaterial)
+        wordMesh.castShadow = true
+        
+        // Position in grid
+        if (wordGeometry.boundingBox) {
+          const wordWidth = wordGeometry.boundingBox.max.x - wordGeometry.boundingBox.min.x
+          wordMesh.position.set(currentX - wordGeometry.boundingBox.min.x, currentY, 0.1)
+          currentX += wordWidth + spacing
+        } else {
+          wordMesh.position.set(currentX, currentY, 0.1)
+          currentX += 0.3 + spacing
+        }
+        
+        // Move to next row if needed
+        if ((index + 1) % wordsPerRow === 0) {
+          currentX = -0.6
+          currentY -= spacing
+        }
+        
+        wordMesh.scale.set(0, 0, 0) // Start scaled down
+        scene.add(wordMesh)
+        cvTextMeshes.push(wordMesh)
+        
+        // Alternate color
+        colorIndex = (colorIndex + 1) % colors.length
+      })
+    },
+    undefined,
+    (error) => {
+      console.warn('Failed to load font for CV words:', error)
+    }
+  )
+}
+
 // Animation loop
 const animate = () => {
   if (!renderer || !scene || !camera) return
@@ -1216,15 +1368,23 @@ const animate = () => {
   // Check for hover on text meshes and update glow
   if (raycaster && camera) {
     raycaster.setFromCamera(mouse, camera)
-    const textMeshes = [textMesh, workTextMesh, cvTextMesh, contactTextMesh].filter(Boolean) as THREE.Mesh[]
+    // Include CV words in hover detection
+    const textMeshes = [
+      textMesh, 
+      workTextMesh, 
+      cvTextMesh, 
+      contactTextMesh, 
+      emailTextMesh,
+      ...cvTextMeshes
+    ].filter(Boolean) as THREE.Mesh[]
     const intersects = raycaster.intersectObjects(textMeshes)
     
     // Reset all text emissive intensities (only for visible items)
-    if (textMesh) {
+    if (textMesh && !showingCV) {
       const material = textMesh.material as THREE.MeshStandardMaterial
       material.emissiveIntensity = 0.5
     }
-    if (!showingEmail) {
+    if (!showingEmail && !showingCV) {
       // Only reset menu items if menu is showing
       if (workTextMesh) {
         const material = workTextMesh.material as THREE.MeshStandardMaterial
@@ -1243,6 +1403,13 @@ const animate = () => {
       // Only reset email if email is showing
       const material = emailTextMesh.material as THREE.MeshStandardMaterial
       material.emissiveIntensity = 0.5
+    }
+    if (showingCV) {
+      // Reset CV words
+      cvTextMeshes.forEach(mesh => {
+        const material = mesh.material as THREE.MeshStandardMaterial
+        material.emissiveIntensity = 0.5
+      })
     }
     
     // Update cursor and glow for hovered text (only if visible)
@@ -1404,6 +1571,14 @@ onUnmounted(() => {
     material.dispose()
     emailTextMesh = null
   }
+  // Clean up CV words
+  cvTextMeshes.forEach(mesh => {
+    scene.remove(mesh)
+    mesh.geometry.dispose()
+    const material = mesh.material as THREE.MeshStandardMaterial
+    material.dispose()
+  })
+  cvTextMeshes = []
 })
 
 // Expose method to manually advance
