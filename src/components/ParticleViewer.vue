@@ -40,6 +40,14 @@ let animationFrameId: number | null = null
 let autoAdvanceTimer: number | null = null
 let resizeObserver: ResizeObserver | null = null
 let textMesh: THREE.Mesh | null = null
+let workTextMesh: THREE.Mesh | null = null
+let cvTextMesh: THREE.Mesh | null = null
+let contactTextMesh: THREE.Mesh | null = null
+let emailTextMesh: THREE.Mesh | null = null
+let showingEmail = false // Track if email is currently shown
+let raycaster: THREE.Raycaster | null = null
+let mouse = new THREE.Vector2()
+let isCameraZoomedOut = false // Track if camera is zoomed out for WORK view
 let targetCameraZ = 5 // Target camera Z position for smooth interpolation
 let currentCameraZ = 5 // Current camera Z position
 
@@ -176,7 +184,10 @@ const initScene = () => {
     resizeObserver.observe(containerRef.value)
   }
   
-  // Set up mouse tracking for rotation
+  // Initialize raycaster for hover detection
+  raycaster = new THREE.Raycaster()
+  
+  // Set up mouse tracking for rotation and hover detection
   const handleMouseMove = (event: MouseEvent) => {
     // Normalize mouse position to -1 to 1 range
     mouseX = (event.clientX / window.innerWidth) * 2 - 1
@@ -185,12 +196,67 @@ const initScene = () => {
     // Calculate target rotation (subtle, max ~15 degrees)
     targetRotationY = mouseX * 0.15 // Rotate around Y axis (left/right)
     targetRotationX = -mouseY * 0.15 // Rotate around X axis (up/down, inverted)
+    
+    // Update mouse position for raycasting
+    mouse.x = mouseX
+    mouse.y = -mouseY // Invert Y for Three.js coordinate system
   }
   
   window.addEventListener('mousemove', handleMouseMove)
   
   // Store handler for cleanup
   ;(window as any).__particleViewerMouseHandler = handleMouseMove
+  
+  // Handle clicks for interactive text elements
+  const handleClick = (event: MouseEvent) => {
+    if (!raycaster || !camera) return
+    
+    // Update mouse position for raycasting
+    mouse.x = (event.clientX / window.innerWidth) * 2 - 1
+    mouse.y = -(event.clientY / window.innerHeight) * 2 + 1
+    
+    raycaster.setFromCamera(mouse, camera)
+    // Include email text mesh in raycasting for click detection
+    const textMeshes = [textMesh, workTextMesh, cvTextMesh, contactTextMesh, emailTextMesh].filter(Boolean) as THREE.Mesh[]
+    const intersects = raycaster.intersectObjects(textMeshes)
+    
+    if (intersects.length > 0) {
+      const clickedMesh = intersects[0]!.object as THREE.Mesh
+      
+      // BAS HORSTING and WORK both zoom out
+      if (clickedMesh === textMesh || clickedMesh === workTextMesh) {
+        // If email is showing, show menu first
+        if (showingEmail) {
+          showMenu()
+        }
+        
+        // Toggle camera zoom
+        if (isCameraZoomedOut) {
+          // Zoom back in
+          updateCameraForParticles()
+          isCameraZoomedOut = false
+        } else {
+          // Zoom out to see particle animations better
+          targetCameraZ = currentCameraZ * 3 // Move camera back 3x
+          isCameraZoomedOut = true
+        }
+      }
+      
+      // CONTACT shows email, email hides and shows menu
+      if (clickedMesh === contactTextMesh && !showingEmail) {
+        // Hide menu items and show email
+        showEmail()
+      } else if (clickedMesh === emailTextMesh && showingEmail) {
+        // Hide email and show menu items
+        showMenu()
+      }
+    }
+  }
+  
+  window.addEventListener('click', handleClick)
+  
+  // Store click handler for cleanup
+  ;(window as any).__particleViewerClickHandler = handleClick
   
   // Load font and create 3D text
   create3DText()
@@ -246,6 +312,133 @@ const create3DText = () => {
       
       // Add to scene
       scene.add(textMesh)
+      
+      // Get the bounding box to position smaller texts below, left-aligned
+      textGeometry.computeBoundingBox()
+      const mainTextHeight = textGeometry.boundingBox ? 
+        (textGeometry.boundingBox.max.y - textGeometry.boundingBox.min.y) : 0.1
+      const mainTextLeft = textGeometry.boundingBox ? 
+        textGeometry.boundingBox.min.x : -0.5
+      const spacing = 0.04 // Space between texts horizontally
+      const smallTextSize = 0.06 // Smaller size for WORK, CV, CONTACT
+      const smallTextY = -mainTextHeight / 2 - spacing - smallTextSize / 2
+      let currentX = mainTextLeft // Start from left edge of main text
+      
+      // Create "WORK" text in yellow
+      const workGeometry = new TextGeometry('WORK', {
+        font: font,
+        size: smallTextSize,
+        depth: 0,
+        curveSegments: 12,
+        bevelEnabled: false
+      })
+      workGeometry.computeBoundingBox()
+      // Don't center, keep left-aligned
+      const workMaterial = new THREE.MeshStandardMaterial({
+        color: 0xffff00, // Yellow
+        transparent: true,
+        opacity: 0.8,
+        metalness: 0.1,
+        roughness: 0.3,
+        emissive: new THREE.Color(0xffff00),
+        emissiveIntensity: 0.5
+      })
+      workTextMesh = new THREE.Mesh(workGeometry, workMaterial)
+      workTextMesh.castShadow = true
+      if (workGeometry.boundingBox) {
+        workTextMesh.position.set(currentX - workGeometry.boundingBox.min.x, smallTextY, 0.1)
+        currentX += (workGeometry.boundingBox.max.x - workGeometry.boundingBox.min.x) + spacing
+      } else {
+        workTextMesh.position.set(currentX, smallTextY, 0.1)
+        currentX += 0.3 + spacing
+      }
+      scene.add(workTextMesh)
+      
+      // Create "CV" text in cyan
+      const cvGeometry = new TextGeometry('CV', {
+        font: font,
+        size: smallTextSize,
+        depth: 0,
+        curveSegments: 12,
+        bevelEnabled: false
+      })
+      cvGeometry.computeBoundingBox()
+      const cvMaterial = new THREE.MeshStandardMaterial({
+        color: 0x00ffff, // Cyan
+        transparent: true,
+        opacity: 0.8,
+        metalness: 0.1,
+        roughness: 0.3,
+        emissive: new THREE.Color(0x00ffff),
+        emissiveIntensity: 0.5
+      })
+      cvTextMesh = new THREE.Mesh(cvGeometry, cvMaterial)
+      cvTextMesh.castShadow = true
+      if (cvGeometry.boundingBox) {
+        cvTextMesh.position.set(currentX - cvGeometry.boundingBox.min.x, smallTextY, 0.1)
+        currentX += (cvGeometry.boundingBox.max.x - cvGeometry.boundingBox.min.x) + spacing
+      } else {
+        cvTextMesh.position.set(currentX, smallTextY, 0.1)
+        currentX += 0.2 + spacing
+      }
+      scene.add(cvTextMesh)
+      
+      // Create "CONTACT" text in magenta
+      const contactGeometry = new TextGeometry('CONTACT', {
+        font: font,
+        size: smallTextSize,
+        depth: 0,
+        curveSegments: 12,
+        bevelEnabled: false
+      })
+      contactGeometry.computeBoundingBox()
+      const contactMaterial = new THREE.MeshStandardMaterial({
+        color: 0xff00ff, // Magenta
+        transparent: true,
+        opacity: 0.8,
+        metalness: 0.1,
+        roughness: 0.3,
+        emissive: new THREE.Color(0xff00ff),
+        emissiveIntensity: 0.5
+      })
+      contactTextMesh = new THREE.Mesh(contactGeometry, contactMaterial)
+      contactTextMesh.castShadow = true
+      if (contactGeometry.boundingBox) {
+        contactTextMesh.position.set(currentX - contactGeometry.boundingBox.min.x, smallTextY, 0.1)
+      } else {
+        contactTextMesh.position.set(currentX, smallTextY, 0.1)
+      }
+      scene.add(contactTextMesh)
+      
+      // Create "bhorsting@gmail.com" text in green, left-aligned (initially hidden)
+      const emailGeometry = new TextGeometry('bhorsting@gmail.com', {
+        font: font,
+        size: smallTextSize,
+        depth: 0,
+        curveSegments: 12,
+        bevelEnabled: false
+      })
+      emailGeometry.computeBoundingBox()
+      // Don't center - keep left-aligned like menu items
+      const emailMaterial = new THREE.MeshStandardMaterial({
+        color: 0x00ff00, // Green
+        transparent: true,
+        opacity: 0, // Start hidden
+        metalness: 0.1,
+        roughness: 0.3,
+        emissive: new THREE.Color(0x00ff00),
+        emissiveIntensity: 0.5
+      })
+      emailTextMesh = new THREE.Mesh(emailGeometry, emailMaterial)
+      emailTextMesh.castShadow = true
+      // Position at the same Y as the menu items, left-aligned with menu
+      if (emailGeometry.boundingBox) {
+        emailTextMesh.position.set(mainTextLeft - emailGeometry.boundingBox.min.x, smallTextY, 0.1)
+      } else {
+        emailTextMesh.position.set(mainTextLeft, smallTextY, 0.1)
+      }
+      emailTextMesh.scale.set(0, 0, 0) // Start scaled down
+      scene.add(emailTextMesh)
     },
     undefined,
     (error) => {
@@ -937,6 +1130,74 @@ const loadInitialImage = async () => {
   }
 }
 
+// Animate menu items hiding/showing
+const animateMenuTransition = (
+  meshes: THREE.Mesh[],
+  targetOpacity: number,
+  targetScale: number,
+  duration: number = 500
+) => {
+  const startTime = Date.now()
+  const startOpacities = meshes.map(m => {
+    const mat = m.material as THREE.MeshStandardMaterial
+    return mat.opacity
+  })
+  const startScales = meshes.map(m => m.scale.x)
+  
+  const animate = () => {
+    const elapsed = Date.now() - startTime
+    const progress = Math.min(elapsed / duration, 1)
+    const easeProgress = progress < 0.5 
+      ? 2 * progress * progress 
+      : 1 - Math.pow(-2 * progress + 2, 2) / 2 // Ease in-out
+    
+    meshes.forEach((mesh, i) => {
+      const material = mesh.material as THREE.MeshStandardMaterial
+      material.opacity = startOpacities[i]! + (targetOpacity - startOpacities[i]!) * easeProgress
+      const scale = startScales[i]! + (targetScale - startScales[i]!) * easeProgress
+      mesh.scale.set(scale, scale, scale)
+    })
+    
+    if (progress < 1) {
+      requestAnimationFrame(animate)
+    }
+  }
+  
+  animate()
+}
+
+// Show email and hide menu
+const showEmail = () => {
+  showingEmail = true
+  const menuItems = [workTextMesh, cvTextMesh, contactTextMesh].filter(Boolean) as THREE.Mesh[]
+  
+  // Hide menu items
+  if (menuItems.length > 0) {
+    animateMenuTransition(menuItems, 0, 0, 300)
+  }
+  
+  // Show email
+  if (emailTextMesh) {
+    animateMenuTransition([emailTextMesh], 0.8, 1, 300)
+  }
+}
+
+// Show menu and hide email
+const showMenu = () => {
+  showingEmail = false
+  
+  // Hide email
+  if (emailTextMesh) {
+    animateMenuTransition([emailTextMesh], 0, 0, 300)
+  }
+  
+  // Show menu items
+  const menuItems = [workTextMesh, cvTextMesh, contactTextMesh].filter(Boolean) as THREE.Mesh[]
+  if (menuItems.length > 0) {
+    animateMenuTransition(menuItems, 0.8, 1, 300)
+  }
+}
+
 // Animation loop
 const animate = () => {
   if (!renderer || !scene || !camera) return
@@ -951,6 +1212,60 @@ const animate = () => {
   const lerpFactor = 0.05 // Smooth interpolation speed
   currentRotationX += (targetRotationX - currentRotationX) * lerpFactor
   currentRotationY += (targetRotationY - currentRotationY) * lerpFactor
+
+  // Check for hover on text meshes and update glow
+  if (raycaster && camera) {
+    raycaster.setFromCamera(mouse, camera)
+    const textMeshes = [textMesh, workTextMesh, cvTextMesh, contactTextMesh].filter(Boolean) as THREE.Mesh[]
+    const intersects = raycaster.intersectObjects(textMeshes)
+    
+    // Reset all text emissive intensities (only for visible items)
+    if (textMesh) {
+      const material = textMesh.material as THREE.MeshStandardMaterial
+      material.emissiveIntensity = 0.5
+    }
+    if (!showingEmail) {
+      // Only reset menu items if menu is showing
+      if (workTextMesh) {
+        const material = workTextMesh.material as THREE.MeshStandardMaterial
+        material.emissiveIntensity = 0.5
+      }
+      if (cvTextMesh) {
+        const material = cvTextMesh.material as THREE.MeshStandardMaterial
+        material.emissiveIntensity = 0.5
+      }
+      if (contactTextMesh) {
+        const material = contactTextMesh.material as THREE.MeshStandardMaterial
+        material.emissiveIntensity = 0.5
+      }
+    }
+    if (showingEmail && emailTextMesh) {
+      // Only reset email if email is showing
+      const material = emailTextMesh.material as THREE.MeshStandardMaterial
+      material.emissiveIntensity = 0.5
+    }
+    
+    // Update cursor and glow for hovered text (only if visible)
+    if (intersects.length > 0) {
+      const hoveredMesh = intersects[0]!.object as THREE.Mesh
+      const material = hoveredMesh.material as THREE.MeshStandardMaterial
+      
+      // Only glow if the mesh is visible (opacity > 0 and scale > 0)
+      if (material.opacity > 0.1 && hoveredMesh.scale.x > 0.1) {
+        material.emissiveIntensity = 2.0 // Much brighter on hover
+        
+        // Change cursor to pointer
+        if (containerRef.value) {
+          containerRef.value.style.cursor = 'pointer'
+        }
+      }
+    } else {
+      // Reset cursor to default
+      if (containerRef.value) {
+        containerRef.value.style.cursor = 'default'
+      }
+    }
+  }
 
   // Apply rotation to camera (but maintain zoom level)
   // Always apply rotation, regardless of transition state
@@ -1016,11 +1331,17 @@ onUnmounted(() => {
   }
   window.removeEventListener('resize', handleResize)
   
-  // Remove mouse event listener
+  // Remove mouse event listeners
   const mouseHandler = (window as any).__particleViewerMouseHandler
   if (mouseHandler) {
     window.removeEventListener('mousemove', mouseHandler)
     delete (window as any).__particleViewerMouseHandler
+  }
+  
+  const clickHandler = (window as any).__particleViewerClickHandler
+  if (clickHandler) {
+    window.removeEventListener('click', clickHandler)
+    delete (window as any).__particleViewerClickHandler
   }
   
   if (resizeObserver && containerRef.value) {
@@ -1047,13 +1368,41 @@ onUnmounted(() => {
           material.dispose()
   }
   
-  // Clean up text mesh
+  // Clean up text meshes
   if (textMesh) {
     scene.remove(textMesh)
     textMesh.geometry.dispose()
-    const material = textMesh.material as THREE.MeshBasicMaterial
+    const material = textMesh.material as THREE.MeshStandardMaterial
     material.dispose()
     textMesh = null
+  }
+  if (workTextMesh) {
+    scene.remove(workTextMesh)
+    workTextMesh.geometry.dispose()
+    const material = workTextMesh.material as THREE.MeshStandardMaterial
+    material.dispose()
+    workTextMesh = null
+  }
+  if (cvTextMesh) {
+    scene.remove(cvTextMesh)
+    cvTextMesh.geometry.dispose()
+    const material = cvTextMesh.material as THREE.MeshStandardMaterial
+    material.dispose()
+    cvTextMesh = null
+  }
+  if (contactTextMesh) {
+    scene.remove(contactTextMesh)
+    contactTextMesh.geometry.dispose()
+    const material = contactTextMesh.material as THREE.MeshStandardMaterial
+    material.dispose()
+    contactTextMesh = null
+  }
+  if (emailTextMesh) {
+    scene.remove(emailTextMesh)
+    emailTextMesh.geometry.dispose()
+    const material = emailTextMesh.material as THREE.MeshStandardMaterial
+    material.dispose()
+    emailTextMesh = null
   }
 })
 
