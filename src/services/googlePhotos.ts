@@ -6,9 +6,9 @@
  */
 
 // Backend API endpoint
-// For Vercel: uses relative path /api (same origin)
+// For Vercel: uses empty string (same origin, /api routes handled by Vercel)
 // For local dev: uses http://localhost:3001
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:3001' : '/api')
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:3001' : '')
 
 // Public share link (if using public album method)
 const PUBLIC_SHARE_LINK = import.meta.env.VITE_GOOGLE_PHOTOS_SHARE_LINK || 'https://photos.app.goo.gl/Vivqp6g4bvuBNtXt9'
