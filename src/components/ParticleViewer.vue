@@ -691,7 +691,7 @@ const imageToParticles = async (imageUrl: string): Promise<THREE.InstancedMesh> 
 
           // Skip black pixels (pixels that don't contain image data)
           // Check if the pixel is essentially black (all channels very low)
-          if (r < 10 && g < 10 && b < 10) continue
+          // if (r < 10 && g < 10 && b < 10) continue
 
           // Normalize color values to 0-1 range
           const rNorm = r / 255
