@@ -44,6 +44,9 @@ let emailTextMesh: THREE.Mesh | null = null
 let showingEmail = false // Track if email is currently shown
 let cvTextMeshes: THREE.Mesh[] = [] // Array to store CV text meshes
 let showingCV = false // Track if CV words are currently shown
+let showingWork = false // Track if work gallery is showing
+let workImagePlanes: THREE.Mesh[] = [] // Array to store work image planes
+let selectedWorkImage: THREE.Mesh | null = null // Currently selected/enlarged image
 let raycaster: THREE.Raycaster | null = null
 let mouse = new THREE.Vector2()
 let isCameraZoomedOut = false // Track if camera is zoomed out for WORK view
@@ -223,14 +226,17 @@ const initScene = () => {
     if (intersects.length > 0) {
       const clickedMesh = intersects[0]!.object as THREE.Mesh
       
-      // BAS HORSTING and WORK both zoom out
-      if (clickedMesh === textMesh || clickedMesh === workTextMesh) {
+      // BAS HORSTING zooms out
+      if (clickedMesh === textMesh) {
         // If email or CV is showing, show menu first
         if (showingEmail) {
           showMenu()
         }
         if (showingCV) {
           hideCVWords()
+        }
+        if (showingWork) {
+          hideWorkGallery()
         }
         
         // Toggle camera zoom
@@ -245,6 +251,41 @@ const initScene = () => {
         }
       }
       
+      // WORK shows gallery
+      if (clickedMesh === workTextMesh) {
+        // If email or CV is showing, show menu first
+        if (showingEmail) {
+          showMenu()
+        }
+        if (showingCV) {
+          hideCVWords()
+        }
+        
+        if (showingWork) {
+          // If already showing work, hide it
+          hideWorkGallery()
+        } else {
+          // Show work gallery
+          showWorkGallery()
+        }
+      }
+      
+      // Check if clicked on a work image
+      if (showingWork && workImagePlanes.length > 0) {
+        const workIntersects = raycaster.intersectObjects(workImagePlanes)
+        if (workIntersects.length > 0) {
+          const clickedImage = workIntersects[0]!.object as THREE.Mesh
+          if (selectedWorkImage === clickedImage) {
+            // If clicking the same image, go back to grid
+            showWorkGrid()
+          } else {
+            // Enlarge and center the clicked image
+            showWorkImage(clickedImage)
+          }
+          return // Don't process other clicks
+        }
+      }
+      
       // CONTACT shows email, email hides and shows menu
       if (clickedMesh === contactTextMesh && !showingEmail && !showingCV) {
         // Hide menu items and show email
@@ -255,11 +296,20 @@ const initScene = () => {
       }
       
       // CV shows list of words
-      if (clickedMesh === cvTextMesh && !showingCV && !showingEmail) {
+      if (clickedMesh === cvTextMesh && !showingCV && !showingEmail && !showingWork) {
         showCVWords()
       } else if (showingCV && clickedMesh && cvTextMeshes.includes(clickedMesh)) {
         // Clicking any CV word hides CV and shows menu
         hideCVWords()
+      }
+    } else {
+      // Clicked outside of any text/image - check if we need to go back
+      if (showingWork && selectedWorkImage) {
+        // If an image is selected, go back to grid
+        showWorkGrid()
+      } else if (showingWork) {
+        // If showing grid, go back to menu
+        hideWorkGallery()
       }
     }
   }
@@ -1251,6 +1301,420 @@ const hideCVWords = () => {
   }
 }
 
+// Show work gallery - create image planes in a grid
+const showWorkGallery = async () => {
+  showingWork = true
+  selectedWorkImage = null
+  
+  // Hide all text
+  const allText = [textMesh, workTextMesh, cvTextMesh, contactTextMesh, emailTextMesh].filter(Boolean) as THREE.Mesh[]
+  if (allText.length > 0) {
+    animateMenuTransition(allText, 0, 0, 300)
+  }
+  
+  // Create image planes if not already created
+  if (workImagePlanes.length === 0) {
+    await createWorkImagePlanes()
+  }
+  
+  // Show image planes in grid layout
+  showWorkGrid()
+  
+  // Position camera to view the grid
+  updateCameraForWorkGrid()
+}
+
+// Create image planes from props.images
+const createWorkImagePlanes = async () => {
+  if (props.images.length === 0) return
+  
+  const loader = new THREE.TextureLoader()
+  
+  for (let i = 0; i < props.images.length; i++) {
+    let imageUrl: string | undefined = props.images[i]
+    if (!imageUrl) continue
+    
+    try {
+      // Extract original URL if it's proxied
+      let originalUrl = imageUrl
+      if (imageUrl.includes('/api/image-proxy')) {
+        // Extract the original URL from the proxied URL
+        const urlMatch = imageUrl.match(/[?&]url=([^&]+)/)
+        if (urlMatch) {
+          originalUrl = decodeURIComponent(urlMatch[1] || '')
+        } else {
+          // If we can't extract, use as-is
+          originalUrl = imageUrl
+        }
+      }
+      
+      // Request higher resolution images for work gallery
+      // Remove existing size parameters and request higher resolution
+      let highResUrl = originalUrl
+      if (originalUrl.includes('googleusercontent.com') || originalUrl.includes('ggpht.com')) {
+        // Remove any existing size parameters
+        const baseUrl = originalUrl.split('=')[0]
+        if (baseUrl) {
+          // Request high resolution (4096px max dimension, or original if smaller)
+          highResUrl = baseUrl + '=w4096-h4096'
+        } else {
+          // Fallback if split fails
+          highResUrl = originalUrl + '=w4096-h4096'
+        }
+      }
+      
+      // Proxy the high-res URL if needed
+      let finalImageUrl: string = highResUrl
+      if (highResUrl.includes('googleusercontent.com') || highResUrl.includes('ggpht.com')) {
+        // Need to proxy through our server
+        const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:3001' : '')
+        finalImageUrl = `${API_BASE_URL}/api/image-proxy?url=${encodeURIComponent(highResUrl)}`
+      }
+      
+      if (!finalImageUrl) continue
+      
+      const texture = await new Promise<THREE.Texture>((resolve, reject) => {
+        loader.load(
+          finalImageUrl,
+          (texture) => {
+            // Configure texture for high quality
+            texture.minFilter = THREE.LinearFilter
+            texture.magFilter = THREE.LinearFilter
+            texture.generateMipmaps = true
+            texture.anisotropy = renderer ? renderer.capabilities.getMaxAnisotropy() : 1
+            resolve(texture)
+          },
+          undefined,
+          reject
+        )
+      })
+      
+      // Calculate aspect ratio
+      const img = texture.image as HTMLImageElement
+      const aspect = img.width / img.height
+      const baseSize = 0.4 // Increased base size for better visibility
+      const width = aspect >= 1 ? baseSize : baseSize * aspect
+      const height = aspect >= 1 ? baseSize / aspect : baseSize
+      
+      // Create plane geometry
+      const geometry = new THREE.PlaneGeometry(width, height)
+      const material = new THREE.MeshBasicMaterial({
+        map: texture,
+        transparent: true,
+        opacity: 0,
+        side: THREE.DoubleSide
+      })
+      
+      const plane = new THREE.Mesh(geometry, material)
+      plane.position.z = 0.2 // Above particles
+      plane.userData = { 
+        originalPosition: plane.position.clone(), 
+        originalScale: plane.scale.clone(),
+        originalImageUrl: originalUrl // Store original unproxied URL for high-res loading
+      }
+      
+      scene.add(plane)
+      workImagePlanes.push(plane)
+    } catch (error) {
+      console.error(`Failed to load image ${i}:`, error)
+    }
+  }
+}
+
+// Show work images in grid layout
+const showWorkGrid = () => {
+  selectedWorkImage = null
+  
+  if (workImagePlanes.length === 0) return
+  
+  // Calculate grid layout
+  const cols = Math.ceil(Math.sqrt(workImagePlanes.length))
+  const rows = Math.ceil(workImagePlanes.length / cols)
+  const spacing = 0.4 // Space between images
+  const margin = 0.2 // Margin around the grid
+  
+  // Calculate total grid size
+  const totalWidth = cols * spacing - spacing + margin * 2
+  const totalHeight = rows * spacing - spacing + margin * 2
+  
+  // Calculate starting position (top-left)
+  const startX = -totalWidth / 2 + margin
+  const startY = totalHeight / 2 - margin
+  
+  // Make all images visible first
+  workImagePlanes.forEach(plane => {
+    const material = plane.material as THREE.MeshBasicMaterial
+    animateOpacity(material, 1.0, 200)
+  })
+  
+  // Position images in grid
+  workImagePlanes.forEach((plane, index) => {
+    const col = index % cols
+    const row = Math.floor(index / cols)
+    
+    const targetX = startX + col * spacing
+    const targetY = startY - row * spacing
+    const targetZ = 0.2
+    
+    // Get original size from texture
+    const material = plane.material as THREE.MeshBasicMaterial
+    const texture = material.map
+    if (texture) {
+      const img = texture.image as HTMLImageElement
+      const aspect = img.width / img.height
+      const baseSize = 0.4 // Increased for better visibility
+      const width = aspect >= 1 ? baseSize : baseSize * aspect
+      const height = aspect >= 1 ? baseSize / aspect : baseSize
+      
+      // Animate to grid position with original size
+      animateImageToPosition(plane, targetX, targetY, targetZ, width, height, 1, 1.0, 500)
+    } else {
+      // Fallback if no texture
+      animateImageToPosition(plane, targetX, targetY, targetZ, 0.3, 0.3, 1, 1.0, 500)
+    }
+  })
+  
+  // Update camera for grid view
+  updateCameraForWorkGrid()
+}
+
+// Show a single enlarged image
+const showWorkImage = async (imageMesh: THREE.Mesh) => {
+  selectedWorkImage = imageMesh
+  
+  // Load higher resolution version if available
+  const originalUrl = imageMesh.userData.originalImageUrl
+  if (originalUrl && (originalUrl.includes('googleusercontent.com') || originalUrl.includes('ggpht.com'))) {
+    // Request even higher resolution for enlarged view
+    const baseUrl = originalUrl.split('=')[0]
+    if (baseUrl) {
+      const highResUrl = baseUrl + '=w8192-h8192' // Request very high resolution
+      
+      // Proxy the high-res URL
+      const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:3001' : '')
+      const proxiedHighResUrl = `${API_BASE_URL}/api/image-proxy?url=${encodeURIComponent(highResUrl)}`
+    
+      try {
+        const loader = new THREE.TextureLoader()
+        const newTexture = await new Promise<THREE.Texture>((resolve, reject) => {
+          loader.load(
+            proxiedHighResUrl,
+          (texture) => {
+            texture.minFilter = THREE.LinearFilter
+            texture.magFilter = THREE.LinearFilter
+            texture.generateMipmaps = true
+            texture.anisotropy = renderer ? renderer.capabilities.getMaxAnisotropy() : 1
+            resolve(texture)
+          },
+          undefined,
+          reject
+        )
+      })
+      
+      // Replace texture
+      const material = imageMesh.material as THREE.MeshBasicMaterial
+      if (material.map) {
+        material.map.dispose()
+      }
+      material.map = newTexture
+      material.needsUpdate = true
+    } catch (error) {
+      console.warn('Failed to load high-res image, using existing:', error)
+    }
+    } else {
+      // If baseUrl is undefined, skip high-res loading
+    }
+  }
+  
+  // Calculate size to fit screen with margin
+  const margin = 0.1 // 10% margin
+  const maxWidth = 1.8 * (1 - margin * 2) // Increased max size
+  const maxHeight = 1.8 * (1 - margin * 2)
+  
+  // Get original aspect ratio from texture
+  const material = imageMesh.material as THREE.MeshBasicMaterial
+  const texture = material.map
+  if (!texture) return
+  
+  const img = texture.image as HTMLImageElement
+  const aspect = img.width / img.height
+  let width = maxWidth
+  let height = maxHeight
+  
+  if (aspect >= 1) {
+    height = width / aspect
+    if (height > maxHeight) {
+      height = maxHeight
+      width = height * aspect
+    }
+  } else {
+    width = height * aspect
+    if (width > maxWidth) {
+      width = maxWidth
+      height = width / aspect
+    }
+  }
+  
+  // Center and enlarge the selected image
+  animateImageToPosition(imageMesh, 0, 0, 0.3, width, height, 1, 1.0, 500)
+  
+  // Hide other images
+  workImagePlanes.forEach(plane => {
+    if (plane !== imageMesh) {
+      const material = plane.material as THREE.MeshBasicMaterial
+      animateOpacity(material, 0, 300)
+    }
+  })
+  
+  // Update camera for single image view
+  updateCameraForWorkImage(width, height)
+}
+
+// Hide work gallery and show menu
+const hideWorkGallery = () => {
+  showingWork = false
+  selectedWorkImage = null
+  
+  // Hide all image planes
+  workImagePlanes.forEach(plane => {
+    const material = plane.material as THREE.MeshBasicMaterial
+    animateOpacity(material, 0, 300)
+  })
+  
+  // Show main text and menu
+  const mainText = [textMesh].filter(Boolean) as THREE.Mesh[]
+  const menuItems = [workTextMesh, cvTextMesh, contactTextMesh].filter(Boolean) as THREE.Mesh[]
+  
+  if (mainText.length > 0) {
+    animateMenuTransition(mainText, 0.8, 1, 300)
+  }
+  if (menuItems.length > 0) {
+    animateMenuTransition(menuItems, 0.8, 1, 300)
+  }
+  
+  // Reset camera
+  updateCameraForParticles()
+}
+
+// Animate image to position and size
+const animateImageToPosition = (
+  mesh: THREE.Mesh,
+  targetX: number,
+  targetY: number,
+  targetZ: number,
+  targetWidth: number,
+  targetHeight: number,
+  targetScale: number,
+  targetOpacity: number,
+  duration: number
+) => {
+  const startTime = Date.now()
+  const startX = mesh.position.x
+  const startY = mesh.position.y
+  const startZ = mesh.position.z
+  const startWidth = (mesh.geometry as THREE.PlaneGeometry).parameters.width
+  const startHeight = (mesh.geometry as THREE.PlaneGeometry).parameters.height
+  const startScale = mesh.scale.x
+  const material = mesh.material as THREE.MeshBasicMaterial
+  const startOpacity = material.opacity
+  
+  const animate = () => {
+    const elapsed = Date.now() - startTime
+    const progress = Math.min(elapsed / duration, 1)
+    const easeProgress = progress < 0.5 
+      ? 2 * progress * progress 
+      : 1 - Math.pow(-2 * progress + 2, 2) / 2 // Ease in-out
+    
+    // Interpolate position
+    mesh.position.x = startX + (targetX - startX) * easeProgress
+    mesh.position.y = startY + (targetY - startY) * easeProgress
+    mesh.position.z = startZ + (targetZ - startZ) * easeProgress
+    
+    // Interpolate scale
+    const currentScale = startScale + (targetScale - startScale) * easeProgress
+    mesh.scale.set(currentScale, currentScale, 1)
+    
+    // Interpolate size (resize geometry)
+    const currentWidth = startWidth + (targetWidth - startWidth) * easeProgress
+    const currentHeight = startHeight + (targetHeight - startHeight) * easeProgress
+    mesh.geometry.dispose()
+    mesh.geometry = new THREE.PlaneGeometry(currentWidth, currentHeight)
+    
+    // Interpolate opacity
+    material.opacity = startOpacity + (targetOpacity - startOpacity) * easeProgress
+    
+    if (progress < 1) {
+      requestAnimationFrame(animate)
+    }
+  }
+  
+  animate()
+}
+
+// Animate opacity
+const animateOpacity = (material: THREE.MeshBasicMaterial, targetOpacity: number, duration: number) => {
+  const startTime = Date.now()
+  const startOpacity = material.opacity
+  
+  const animate = () => {
+    const elapsed = Date.now() - startTime
+    const progress = Math.min(elapsed / duration, 1)
+    const easeProgress = progress < 0.5 
+      ? 2 * progress * progress 
+      : 1 - Math.pow(-2 * progress + 2, 2) / 2
+    
+    material.opacity = startOpacity + (targetOpacity - startOpacity) * easeProgress
+    
+    if (progress < 1) {
+      requestAnimationFrame(animate)
+    }
+  }
+  
+  animate()
+}
+
+// Update camera to view work grid
+const updateCameraForWorkGrid = () => {
+  if (!camera || workImagePlanes.length === 0) return
+  
+  // Calculate grid bounds
+  const cols = Math.ceil(Math.sqrt(workImagePlanes.length))
+  const rows = Math.ceil(workImagePlanes.length / cols)
+  const spacing = 0.4
+  const margin = 0.2
+  
+  const totalWidth = cols * spacing - spacing + margin * 2
+  const totalHeight = rows * spacing - spacing + margin * 2
+  
+  // Calculate camera distance to fit grid
+  const screenAspect = window.innerWidth / window.innerHeight
+  const fovRad = camera.fov * (Math.PI / 180)
+  const halfFovRad = fovRad / 2
+  const tanHalfFov = halfFovRad
+  
+  const distanceForWidth = (totalWidth / 2) / (tanHalfFov * screenAspect)
+  const distanceForHeight = (totalHeight / 2) / tanHalfFov
+  const distance = Math.max(distanceForWidth, distanceForHeight) * 1.1 // Add 10% padding
+  
+  targetCameraZ = distance
+}
+
+// Update camera to view single work image
+const updateCameraForWorkImage = (width: number, height: number) => {
+  if (!camera) return
+  
+  const screenAspect = window.innerWidth / window.innerHeight
+  const fovRad = camera.fov * (Math.PI / 180)
+  const halfFovRad = fovRad / 2
+  const tanHalfFov = halfFovRad
+  
+  const distanceForWidth = (width / 2) / (tanHalfFov * screenAspect)
+  const distanceForHeight = (height / 2) / tanHalfFov
+  const distance = Math.max(distanceForWidth, distanceForHeight) * 1.1 // Add 10% padding
+  
+  targetCameraZ = distance
+}
+
 // Create CV words
 const createCVWords = () => {
   if (!textMesh) return // Need font to be loaded first
@@ -1354,19 +1818,30 @@ const animate = () => {
   currentRotationX += (targetRotationX - currentRotationX) * lerpFactor
   currentRotationY += (targetRotationY - currentRotationY) * lerpFactor
 
-  // Check for hover on text meshes and update glow
-  if (raycaster && camera) {
-    raycaster.setFromCamera(mouse, camera)
-    // Include CV words in hover detection
-    const textMeshes = [
-      textMesh, 
-      workTextMesh, 
-      cvTextMesh, 
-      contactTextMesh, 
-      emailTextMesh,
-      ...cvTextMeshes
-    ].filter(Boolean) as THREE.Mesh[]
-    const intersects = raycaster.intersectObjects(textMeshes)
+    // Check for hover on text meshes and update glow
+    if (raycaster && camera) {
+      raycaster.setFromCamera(mouse, camera)
+      
+      // Check hover on work images
+      if (showingWork && workImagePlanes.length > 0) {
+        const workIntersects = raycaster.intersectObjects(workImagePlanes)
+        if (workIntersects.length > 0) {
+          if (containerRef.value) {
+            containerRef.value.style.cursor = 'pointer'
+          }
+        }
+      }
+      
+      // Include CV words in hover detection
+      const textMeshes = [
+        textMesh, 
+        workTextMesh, 
+        cvTextMesh, 
+        contactTextMesh, 
+        emailTextMesh,
+        ...cvTextMeshes
+      ].filter(Boolean) as THREE.Mesh[]
+      const intersects = raycaster.intersectObjects(textMeshes)
     
     // Reset all text emissive intensities (only for visible items)
     if (textMesh && !showingCV) {
@@ -1564,6 +2039,18 @@ onUnmounted(() => {
     material.dispose()
   })
   cvTextMeshes = []
+  
+  // Clean up work image planes
+  workImagePlanes.forEach(plane => {
+    scene.remove(plane)
+    plane.geometry.dispose()
+    const material = plane.material as THREE.MeshBasicMaterial
+    if (material.map) {
+      material.map.dispose()
+    }
+    material.dispose()
+  })
+  workImagePlanes = []
 })
 
 // Expose method to manually advance
