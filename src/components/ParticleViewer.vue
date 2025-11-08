@@ -49,9 +49,16 @@ let showingWork = false // Track if work gallery is showing
 let workImagePlanes: THREE.Mesh[] = [] // Array to store work image planes
 let selectedWorkImage: THREE.Mesh | null = null // Currently selected/enlarged image
 let raycaster: THREE.Raycaster | null = null
+let yellowRect: THREE.Mesh | null = null
+let pinkRect: THREE.Mesh | null = null
+let cyanRect: THREE.Mesh | null = null
+let loadingTextMesh: THREE.Mesh | null = null
 let yellowSpotlight: THREE.SpotLight | null = null
 let magentaSpotlight: THREE.SpotLight | null = null
 let cyanSpotlight: THREE.SpotLight | null = null
+const defaultSpotlightAngle = Math.PI / 40 // Original narrow angle
+let targetSpotlightAngle = defaultSpotlightAngle // Target angle for smooth interpolation
+let currentSpotlightAngle = defaultSpotlightAngle // Current angle
 let mouse = new THREE.Vector2()
 let isCameraZoomedOut = false // Track if camera is zoomed out for WORK view
 let targetCameraZ = 5 // Target camera Z position for smooth interpolation
@@ -101,7 +108,7 @@ const initScene = () => {
     metalness: 0.1,
     roughness: 0.3
   })
-  const yellowRect = new THREE.Mesh(yellowGeometry, yellowMaterial)
+  yellowRect = new THREE.Mesh(yellowGeometry, yellowMaterial)
   yellowRect.rotation.z = rotationAngle
   yellowRect.position.set(-2, 1, -18) // Different z position to avoid z-fighting
   scene.add(yellowRect)
@@ -115,7 +122,7 @@ const initScene = () => {
     metalness: 0.1,
     roughness: 0.3
   })
-  const pinkRect = new THREE.Mesh(pinkGeometry, pinkMaterial)
+  pinkRect = new THREE.Mesh(pinkGeometry, pinkMaterial)
   pinkRect.rotation.z = rotationAngle
   pinkRect.position.set(0, 0, -20) // Middle z position
   scene.add(pinkRect)
@@ -129,7 +136,7 @@ const initScene = () => {
     metalness: 0.1,
     roughness: 0.3
   })
-  const cyanRect = new THREE.Mesh(cyanGeometry, cyanMaterial)
+  cyanRect = new THREE.Mesh(cyanGeometry, cyanMaterial)
   cyanRect.rotation.z = rotationAngle
   cyanRect.position.set(2, -1, -22) // Furthest back
   scene.add(cyanRect)
@@ -170,6 +177,9 @@ const initScene = () => {
   // Enable shadows
   renderer.shadowMap.enabled = true
   renderer.shadowMap.type = THREE.PCFSoftShadowMap // Soft shadows
+  // Enable HDR tone mapping for better color range and lighting
+  renderer.toneMapping = THREE.ACESFilmicToneMapping // High-quality HDR tone mapping
+  renderer.toneMappingExposure = 1.0 // Adjust this to control overall brightness (0.5-2.0 range works well)
   containerRef.value.appendChild(renderer.domElement)
 
   // Handle window resize
@@ -1292,6 +1302,72 @@ const hideCVWords = () => {
   }
 }
 
+// Show loading text
+const showLoadingText = () => {
+  if (loadingTextMesh) {
+    loadingTextMesh.visible = true
+    const material = loadingTextMesh.material as THREE.MeshStandardMaterial
+    animateOpacity(material, 1.0, 200)
+    return
+  }
+  
+  // Create loading text if it doesn't exist
+  const loader = new FontLoader()
+  loader.load(
+    '/fonts/font_sans.json',
+    (font) => {
+      const loadingGeometry = new TextGeometry('LOADING...', {
+        font: font,
+        size: 0.12,
+        depth: 0,
+        curveSegments: 12,
+        bevelEnabled: false
+      })
+      
+      loadingGeometry.computeBoundingBox()
+      if (loadingGeometry.boundingBox) {
+        const centerOffsetX = -0.5 * (loadingGeometry.boundingBox.max.x + loadingGeometry.boundingBox.min.x)
+        const centerOffsetY = -0.5 * (loadingGeometry.boundingBox.max.y + loadingGeometry.boundingBox.min.y)
+        loadingGeometry.translate(centerOffsetX, centerOffsetY, 0)
+      }
+      
+      const loadingMaterial = new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0,
+        metalness: 0.1,
+        roughness: 0.3
+      })
+      
+      loadingTextMesh = new THREE.Mesh(loadingGeometry, loadingMaterial)
+      loadingTextMesh.castShadow = true
+      loadingTextMesh.position.z = 0.1
+      loadingTextMesh.visible = true
+      scene.add(loadingTextMesh)
+      
+      // Animate in
+      animateOpacity(loadingMaterial, 1.0, 200)
+    },
+    undefined,
+    (error) => {
+      console.warn('Failed to load font for loading text:', error)
+    }
+  )
+}
+
+// Hide loading text
+const hideLoadingText = () => {
+  if (loadingTextMesh) {
+    const material = loadingTextMesh.material as THREE.MeshStandardMaterial
+    animateOpacity(material, 0, 200)
+    setTimeout(() => {
+      if (loadingTextMesh) {
+        loadingTextMesh.visible = false
+      }
+    }, 200)
+  }
+}
+
 // Show work gallery - create image planes in a grid
 const showWorkGallery = async () => {
   showingWork = true
@@ -1303,16 +1379,56 @@ const showWorkGallery = async () => {
     animateMenuTransition(allText, 0, 0, 300)
   }
   
+  // Remove background rectangles completely from scene and dispose of them
+  if (yellowRect) {
+    yellowRect.visible = false // Hide immediately
+    scene.remove(yellowRect)
+    yellowRect.geometry.dispose()
+    const yellowMat = yellowRect.material as THREE.MeshStandardMaterial
+    yellowMat.dispose()
+    yellowRect = null
+  }
+  if (pinkRect) {
+    pinkRect.visible = false // Hide immediately
+    scene.remove(pinkRect)
+    pinkRect.geometry.dispose()
+    const pinkMat = pinkRect.material as THREE.MeshStandardMaterial
+    pinkMat.dispose()
+    pinkRect = null
+  }
+  if (cyanRect) {
+    cyanRect.visible = false // Hide immediately
+    scene.remove(cyanRect)
+    cyanRect.geometry.dispose()
+    const cyanMat = cyanRect.material as THREE.MeshStandardMaterial
+    cyanMat.dispose()
+    cyanRect = null
+  }
+  
+  // Force immediate render to clear GPU cache
+  if (renderer && scene && camera) {
+    renderer.render(scene, camera)
+  }
+  
+  // Show loading text
+  showLoadingText()
+  
   // Create image planes if not already created
   if (workImagePlanes.length === 0) {
     await createWorkImagePlanes()
   }
+  
+  // Hide loading text after images are loaded
+  hideLoadingText()
   
   // Show image planes in grid layout
   showWorkGrid()
   
   // Position camera to view the grid
   updateCameraForWorkGrid()
+  
+  // Animate spotlights to be 50% wider than twice as wide (3x default) for work mode
+  targetSpotlightAngle = defaultSpotlightAngle * 3
 }
 
 // Create image planes from props.images
@@ -1346,11 +1462,11 @@ const createWorkImagePlanes = async () => {
         // Remove any existing size parameters
         const baseUrl = originalUrl.split('=')[0]
         if (baseUrl) {
-          // Request high resolution (4096px max dimension, or original if smaller)
-          highResUrl = baseUrl + '=w4096-h4096'
+          // Request 1280px resolution
+          highResUrl = baseUrl + '=w1280-h1280'
         } else {
           // Fallback if split fails
-          highResUrl = originalUrl + '=w4096-h4096'
+          highResUrl = originalUrl + '=w1280-h1280'
         }
       }
       
@@ -1389,7 +1505,7 @@ const createWorkImagePlanes = async () => {
       
       // Create plane geometry
       const geometry = new THREE.PlaneGeometry(width, height)
-      const material = new THREE.MeshBasicMaterial({
+      const material = new THREE.MeshStandardMaterial({
         map: texture,
         transparent: true,
         opacity: 0,
@@ -1398,12 +1514,33 @@ const createWorkImagePlanes = async () => {
       
       const plane = new THREE.Mesh(geometry, material)
       plane.position.z = 0.2 // Above particles
+      plane.castShadow = true // Work images cast shadows
+      plane.receiveShadow = true // Work images can also receive shadows
       plane.userData = { 
         originalPosition: plane.position.clone(), 
         originalScale: plane.scale.clone(),
         originalImageUrl: originalUrl // Store original unproxied URL for high-res loading
       }
       
+      // Create white border plane behind the image
+      const borderWidth = 0.01 // Border thickness
+      const borderGeometry = new THREE.PlaneGeometry(width + borderWidth * 2, height + borderWidth * 2)
+      const borderMaterial = new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0,
+        side: THREE.DoubleSide
+      })
+      const borderPlane = new THREE.Mesh(borderGeometry, borderMaterial)
+      borderPlane.position.copy(plane.position)
+      borderPlane.position.z = plane.position.z - 0.001 // Slightly behind the image
+      borderPlane.castShadow = true // Border also casts shadows
+      borderPlane.receiveShadow = true
+      
+      // Store border reference in plane userData
+      plane.userData.borderPlane = borderPlane
+      
+      scene.add(borderPlane)
       scene.add(plane)
       workImagePlanes.push(plane)
     } catch (error) {
@@ -1421,8 +1558,8 @@ const showWorkGrid = () => {
   // Calculate grid layout
   const cols = Math.ceil(Math.sqrt(workImagePlanes.length))
   const rows = Math.ceil(workImagePlanes.length / cols)
-  const spacing = 0.4 // Space between images
-  const margin = 0.2 // Margin around the grid
+  const spacing = 0.5 // Space between images
+  const margin = 0.25 // Margin around the grid
   
   // Calculate total grid size
   const totalWidth = cols * spacing - spacing + margin * 2
@@ -1432,10 +1569,17 @@ const showWorkGrid = () => {
   const startX = -totalWidth / 2 + margin
   const startY = totalHeight / 2 - margin
   
-  // Make all images visible first
+  // Make all images and borders visible first
   workImagePlanes.forEach(plane => {
-    const material = plane.material as THREE.MeshBasicMaterial
+    const material = plane.material as THREE.MeshStandardMaterial
     animateOpacity(material, 1.0, 200)
+    
+    // Show border
+    const borderPlane = plane.userData.borderPlane as THREE.Mesh | undefined
+    if (borderPlane) {
+      const borderMaterial = borderPlane.material as THREE.MeshStandardMaterial
+      animateOpacity(borderMaterial, 1.0, 200)
+    }
   })
   
   // Position images in grid
@@ -1459,9 +1603,23 @@ const showWorkGrid = () => {
       
       // Animate to grid position with original size
       animateImageToPosition(plane, targetX, targetY, targetZ, width, height, 1, 1.0, 500)
+      
+      // Animate border to match
+      const borderPlane = plane.userData.borderPlane as THREE.Mesh | undefined
+      if (borderPlane) {
+        const borderWidth = 0.01
+        animateImageToPosition(borderPlane, targetX, targetY, targetZ - 0.001, width + borderWidth * 2, height + borderWidth * 2, 1, 1.0, 500)
+      }
     } else {
       // Fallback if no texture
       animateImageToPosition(plane, targetX, targetY, targetZ, 0.3, 0.3, 1, 1.0, 500)
+      
+      // Animate border to match
+      const borderPlane = plane.userData.borderPlane as THREE.Mesh | undefined
+      if (borderPlane) {
+        const borderWidth = 0.01
+        animateImageToPosition(borderPlane, targetX, targetY, targetZ - 0.001, 0.3 + borderWidth * 2, 0.3 + borderWidth * 2, 1, 1.0, 500)
+      }
     }
   })
   
@@ -1479,7 +1637,7 @@ const showWorkImage = async (imageMesh: THREE.Mesh) => {
     // Request even higher resolution for enlarged view
     const baseUrl = originalUrl.split('=')[0]
     if (baseUrl) {
-      const highResUrl = baseUrl + '=w8192-h8192' // Request very high resolution
+      const highResUrl = baseUrl + '=w1280-h1280' // Request 1280px resolution
       
       // Proxy the high-res URL
       const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:3001' : '')
@@ -1549,11 +1707,24 @@ const showWorkImage = async (imageMesh: THREE.Mesh) => {
   // Center and enlarge the selected image
   animateImageToPosition(imageMesh, 0, 0, 0.3, width, height, 1, 1.0, 500)
   
-  // Hide other images
+  // Animate border to match
+  const borderPlane = imageMesh.userData.borderPlane as THREE.Mesh | undefined
+  if (borderPlane) {
+    const borderWidth = 0.01
+    animateImageToPosition(borderPlane, 0, 0, 0.3 - 0.001, width + borderWidth * 2, height + borderWidth * 2, 1, 1.0, 500)
+  }
+  
+  // Hide other images and their borders
   workImagePlanes.forEach(plane => {
     if (plane !== imageMesh) {
-      const material = plane.material as THREE.MeshBasicMaterial
+      const material = plane.material as THREE.MeshStandardMaterial
       animateOpacity(material, 0, 300)
+      
+      const borderPlane = plane.userData.borderPlane as THREE.Mesh | undefined
+      if (borderPlane) {
+        const borderMaterial = borderPlane.material as THREE.MeshStandardMaterial
+        animateOpacity(borderMaterial, 0, 300)
+      }
     }
   })
   
@@ -1566,11 +1737,71 @@ const hideWorkGallery = () => {
   showingWork = false
   selectedWorkImage = null
   
-  // Hide all image planes
+  // Remove and dispose of all work image planes and their borders
   workImagePlanes.forEach(plane => {
-    const material = plane.material as THREE.MeshBasicMaterial
-    animateOpacity(material, 0, 300)
+    plane.visible = false // Hide immediately
+    scene.remove(plane)
+    plane.geometry.dispose()
+    const material = plane.material as THREE.MeshStandardMaterial
+    if (material.map) {
+      material.map.dispose()
+    }
+    material.dispose()
+    
+    // Remove and dispose of border
+    const borderPlane = plane.userData.borderPlane as THREE.Mesh | undefined
+    if (borderPlane) {
+      borderPlane.visible = false
+      scene.remove(borderPlane)
+      borderPlane.geometry.dispose()
+      const borderMaterial = borderPlane.material as THREE.MeshStandardMaterial
+      borderMaterial.dispose()
+    }
   })
+  workImagePlanes = []
+  
+  // Ensure background rectangles are completely removed (double-check)
+  if (yellowRect) {
+    if (scene.children.includes(yellowRect)) {
+      yellowRect.visible = false // Hide immediately
+      scene.remove(yellowRect)
+    }
+    yellowRect.geometry.dispose()
+    const yellowMat = yellowRect.material as THREE.MeshStandardMaterial
+    yellowMat.dispose()
+    yellowRect = null
+  }
+  if (pinkRect) {
+    if (scene.children.includes(pinkRect)) {
+      pinkRect.visible = false // Hide immediately
+      scene.remove(pinkRect)
+    }
+    pinkRect.geometry.dispose()
+    const pinkMat = pinkRect.material as THREE.MeshStandardMaterial
+    pinkMat.dispose()
+    pinkRect = null
+  }
+  if (cyanRect) {
+    if (scene.children.includes(cyanRect)) {
+      cyanRect.visible = false // Hide immediately
+      scene.remove(cyanRect)
+    }
+    cyanRect.geometry.dispose()
+    const cyanMat = cyanRect.material as THREE.MeshStandardMaterial
+    cyanMat.dispose()
+    cyanRect = null
+  }
+  
+  // Force immediate render to clear GPU cache
+  if (renderer && scene && camera) {
+    renderer.render(scene, camera)
+  }
+  
+  // Reset camera zoom to default level
+  targetCameraZ = 5
+  
+  // Animate spotlights back to original angle
+  targetSpotlightAngle = defaultSpotlightAngle
   
   // Show main text and menu
   const mainText = [textMesh].filter(Boolean) as THREE.Mesh[]
@@ -1583,7 +1814,7 @@ const hideWorkGallery = () => {
     animateMenuTransition(menuItems, 0.8, 1, 300)
   }
   
-  // Reset camera
+  // Reset camera (this will also update zoom based on particles, but we've set default above)
   updateCameraForParticles()
 }
 
@@ -1643,7 +1874,7 @@ const animateImageToPosition = (
 }
 
 // Animate opacity
-const animateOpacity = (material: THREE.MeshBasicMaterial, targetOpacity: number, duration: number) => {
+const animateOpacity = (material: THREE.MeshBasicMaterial | THREE.MeshStandardMaterial, targetOpacity: number, duration: number) => {
   const startTime = Date.now()
   const startOpacity = material.opacity
   
@@ -1671,8 +1902,8 @@ const updateCameraForWorkGrid = () => {
   // Calculate grid bounds
   const cols = Math.ceil(Math.sqrt(workImagePlanes.length))
   const rows = Math.ceil(workImagePlanes.length / cols)
-  const spacing = 0.4
-  const margin = 0.2
+  const spacing = 0.5 // Match spacing in showWorkGrid
+  const margin = 0.25 // Match margin in showWorkGrid
   
   const totalWidth = cols * spacing - spacing + margin * 2
   const totalHeight = rows * spacing - spacing + margin * 2
@@ -1801,6 +2032,31 @@ const animate = () => {
   // Smooth interpolation for camera zoom
   const zoomLerpFactor = 0.01 // Smooth interpolation speed for zoom
   currentCameraZ += (targetCameraZ - currentCameraZ) * zoomLerpFactor
+
+  // Smooth interpolation for spotlight angles
+  const angleLerpFactor = 0.05 // Smooth interpolation speed for spotlight angles
+  currentSpotlightAngle += (targetSpotlightAngle - currentSpotlightAngle) * angleLerpFactor
+  
+  // Update spotlight angles and shadow camera FOV
+  if (yellowSpotlight && magentaSpotlight && cyanSpotlight) {
+    yellowSpotlight.angle = currentSpotlightAngle
+    magentaSpotlight.angle = currentSpotlightAngle
+    cyanSpotlight.angle = currentSpotlightAngle
+    
+    // Update shadow camera FOV to match the spotlight angle (convert to degrees)
+    const shadowFov = (currentSpotlightAngle * 180 / Math.PI) * 2 // FOV should be roughly 2x the angle
+    const yellowShadowCamera = yellowSpotlight.shadow.camera as THREE.PerspectiveCamera
+    const magentaShadowCamera = magentaSpotlight.shadow.camera as THREE.PerspectiveCamera
+    const cyanShadowCamera = cyanSpotlight.shadow.camera as THREE.PerspectiveCamera
+    
+    yellowShadowCamera.fov = shadowFov
+    magentaShadowCamera.fov = shadowFov
+    cyanShadowCamera.fov = shadowFov
+    
+    yellowShadowCamera.updateProjectionMatrix()
+    magentaShadowCamera.updateProjectionMatrix()
+    cyanShadowCamera.updateProjectionMatrix()
+  }
 
   // Smooth interpolation for mouse-based rotation
   const lerpFactor = 0.05 // Smooth interpolation speed
@@ -2006,15 +2262,33 @@ onUnmounted(() => {
   })
   cvTextMeshes = []
   
-  // Clean up work image planes
+  // Clean up loading text
+  if (loadingTextMesh) {
+    scene.remove(loadingTextMesh)
+    loadingTextMesh.geometry.dispose()
+    const material = loadingTextMesh.material as THREE.MeshStandardMaterial
+    material.dispose()
+    loadingTextMesh = null
+  }
+  
+  // Clean up work image planes and their borders
   workImagePlanes.forEach(plane => {
     scene.remove(plane)
     plane.geometry.dispose()
-    const material = plane.material as THREE.MeshBasicMaterial
+    const material = plane.material as THREE.MeshStandardMaterial
     if (material.map) {
       material.map.dispose()
     }
     material.dispose()
+    
+    // Clean up border
+    const borderPlane = plane.userData.borderPlane as THREE.Mesh | undefined
+    if (borderPlane) {
+      scene.remove(borderPlane)
+      borderPlane.geometry.dispose()
+      const borderMaterial = borderPlane.material as THREE.MeshStandardMaterial
+      borderMaterial.dispose()
+    }
   })
   workImagePlanes = []
 })
