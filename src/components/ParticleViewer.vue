@@ -7,9 +7,6 @@ import { ref, onMounted, onUnmounted, watch } from 'vue'
 import * as THREE from 'three'
 import { FontLoader } from 'three/examples/jsm/loaders/FontLoader.js'
 import { TextGeometry } from 'three/examples/jsm/geometries/TextGeometry.js'
-import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
-import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
-import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 
 interface Props {
   images: string[]
@@ -31,7 +28,7 @@ const containerRef = ref<HTMLElement | null>(null)
 let scene: THREE.Scene
 let camera: THREE.PerspectiveCamera
 let renderer: THREE.WebGLRenderer
-let composer: EffectComposer | null = null
+let gridHelper: THREE.GridHelper | null = null
 let currentParticles: THREE.InstancedMesh | null = null
 let nextParticles: THREE.InstancedMesh | null = null
 let currentImageIndex = 0
@@ -74,6 +71,16 @@ const initScene = () => {
   scene = new THREE.Scene()
   scene.background = new THREE.Color(0x330099) // Black background
   
+  // Create grid of black lines between text and particles
+  const gridSize = 10 // Size of the grid
+  const divisions = 100 // Number of divisions
+    gridHelper = new THREE.GridHelper(gridSize, divisions, 0x000000, 0xffffff)
+  gridHelper.material.opacity = 0.5
+  gridHelper.material.transparent = true
+    gridHelper.position.z = 0.15 // Behind all
+  gridHelper.rotateX(Math.PI / 2)
+  scene.add(gridHelper)
+  
   // Create three rotated rectangles for background
   const rectSize = 12 // Large size to cover background
   const rotationAngle = 30 * (Math.PI / 180) // 30 degrees in radians
@@ -83,7 +90,7 @@ const initScene = () => {
   const yellowMaterial = new THREE.MeshBasicMaterial({ 
     color: 0xffff00,
     transparent: true,
-    opacity: 0.5
+    opacity: 0.75
   })
   const yellowRect = new THREE.Mesh(yellowGeometry, yellowMaterial)
   yellowRect.rotation.z = rotationAngle
@@ -95,7 +102,7 @@ const initScene = () => {
   const pinkMaterial = new THREE.MeshBasicMaterial({ 
     color: 0xff00ff,
     transparent: true,
-    opacity: 0.5
+    opacity: 0.75
   })
   const pinkRect = new THREE.Mesh(pinkGeometry, pinkMaterial)
   pinkRect.rotation.z = rotationAngle
@@ -107,7 +114,7 @@ const initScene = () => {
   const cyanMaterial = new THREE.MeshBasicMaterial({ 
     color: 0x00ffff,
     transparent: true,
-    opacity: 0.5
+    opacity: 0.75
   })
   const cyanRect = new THREE.Mesh(cyanGeometry, cyanMaterial)
   cyanRect.rotation.z = rotationAngle
@@ -158,22 +165,6 @@ const initScene = () => {
   renderer.shadowMap.enabled = true
   renderer.shadowMap.type = THREE.PCFSoftShadowMap // Soft shadows
   containerRef.value.appendChild(renderer.domElement)
-  
-  // Setup post-processing for glow effect
-  composer = new EffectComposer(renderer)
-  
-  // Add render pass
-  const renderPass = new RenderPass(scene, camera)
-  composer.addPass(renderPass)
-  
-  // Add bloom/glow pass
-  const bloomPass = new UnrealBloomPass(
-    new THREE.Vector2(window.innerWidth, window.innerHeight),
-    0.1, // strength
-    0.4, // radius
-    0.3 // threshold - lower threshold means more things will glow
-  )
-  composer.addPass(bloomPass)
 
   // Handle window resize
   window.addEventListener('resize', handleResize)
@@ -583,9 +574,6 @@ const handleResize = () => {
   camera.aspect = window.innerWidth / window.innerHeight
   camera.updateProjectionMatrix()
   renderer.setSize(window.innerWidth, window.innerHeight)
-  if (composer) {
-    composer.setSize(window.innerWidth, window.innerHeight)
-  }
   updateCameraForParticles()
 }
 
@@ -828,6 +816,7 @@ const imageToParticles = async (imageUrl: string): Promise<THREE.InstancedMesh> 
       reject(new Error(`Failed to load image: ${imageUrl}`))
     }
 
+    // Use the image URL directly (should already be proxied if needed)
     img.src = imageUrl
   })
 }
@@ -1449,12 +1438,7 @@ const animate = () => {
   // as long as currentRotationX/Y values don't get reset
   camera.lookAt(0, 0, 0)
 
-  // Use composer for post-processing (glow effect) if available, otherwise render normally
-  if (composer) {
-    composer.render()
-  } else {
-    renderer.render(scene, camera)
-  }
+  renderer.render(scene, camera)
   animationFrameId = requestAnimationFrame(animate)
 }
 
@@ -1517,9 +1501,10 @@ onUnmounted(() => {
     resizeObserver = null
   }
   
-  if (composer) {
-    composer.dispose()
-    composer = null
+  if (gridHelper) {
+    scene.remove(gridHelper)
+    gridHelper.dispose()
+    gridHelper = null
   }
   if (renderer) {
     renderer.dispose()
