@@ -7,6 +7,7 @@ import { ref, onMounted, onUnmounted, watch } from 'vue'
 import * as THREE from 'three'
 import { FontLoader } from 'three/examples/jsm/loaders/FontLoader.js'
 import { TextGeometry } from 'three/examples/jsm/geometries/TextGeometry.js'
+import { setupLighting, animateLighting } from './particleViewer/lighting'
 
 interface Props {
   images: string[]
@@ -48,6 +49,9 @@ let showingWork = false // Track if work gallery is showing
 let workImagePlanes: THREE.Mesh[] = [] // Array to store work image planes
 let selectedWorkImage: THREE.Mesh | null = null // Currently selected/enlarged image
 let raycaster: THREE.Raycaster | null = null
+let yellowSpotlight: THREE.SpotLight | null = null
+let magentaSpotlight: THREE.SpotLight | null = null
+let cyanSpotlight: THREE.SpotLight | null = null
 let mouse = new THREE.Vector2()
 let isCameraZoomedOut = false // Track if camera is zoomed out for WORK view
 let targetCameraZ = 5 // Target camera Z position for smooth interpolation
@@ -88,66 +92,65 @@ const initScene = () => {
   const rectSize = 12 // Large size to cover background
   const rotationAngle = 30 * (Math.PI / 180) // 30 degrees in radians
   
-  // Yellow rectangle
+  // Yellow rectangle - use MeshStandardMaterial so it responds to lighting
   const yellowGeometry = new THREE.PlaneGeometry(rectSize, rectSize)
-  const yellowMaterial = new THREE.MeshBasicMaterial({ 
+  const yellowMaterial = new THREE.MeshStandardMaterial({ 
     color: 0xffff00,
     transparent: true,
-    opacity: 0.75
+    opacity: 0.75,
+    metalness: 0.1,
+    roughness: 0.3
   })
   const yellowRect = new THREE.Mesh(yellowGeometry, yellowMaterial)
   yellowRect.rotation.z = rotationAngle
   yellowRect.position.set(-2, 1, -18) // Different z position to avoid z-fighting
   scene.add(yellowRect)
   
-  // Pink rectangle
+  // Pink rectangle - use MeshStandardMaterial so it responds to lighting
   const pinkGeometry = new THREE.PlaneGeometry(rectSize, rectSize)
-  const pinkMaterial = new THREE.MeshBasicMaterial({ 
+  const pinkMaterial = new THREE.MeshStandardMaterial({ 
     color: 0xff00ff,
     transparent: true,
-    opacity: 0.75
+    opacity: 0.75,
+    metalness: 0.1,
+    roughness: 0.3
   })
   const pinkRect = new THREE.Mesh(pinkGeometry, pinkMaterial)
   pinkRect.rotation.z = rotationAngle
   pinkRect.position.set(0, 0, -20) // Middle z position
   scene.add(pinkRect)
   
-  // Cyan rectangle
+  // Cyan rectangle - use MeshStandardMaterial so it responds to lighting
   const cyanGeometry = new THREE.PlaneGeometry(rectSize, rectSize)
-  const cyanMaterial = new THREE.MeshBasicMaterial({ 
+  const cyanMaterial = new THREE.MeshStandardMaterial({ 
     color: 0x00ffff,
     transparent: true,
-    opacity: 0.75
+    opacity: 0.75,
+    metalness: 0.1,
+    roughness: 0.3
   })
   const cyanRect = new THREE.Mesh(cyanGeometry, cyanMaterial)
   cyanRect.rotation.z = rotationAngle
   cyanRect.position.set(2, -1, -22) // Furthest back
   scene.add(cyanRect)
   
-  // Add directional light for shadows (positioned above the text)
-  const directionalLight = new THREE.DirectionalLight(0xffffff, 1)
-  directionalLight.position.set(0, 2, 3)
-  directionalLight.castShadow = true
+  // Create three colored spotlights using the lighting module
+  // Create a minimal state object for the lighting module
+  const lightingState = {
+    scene,
+    yellowSpotlight: null as THREE.SpotLight | null,
+    magentaSpotlight: null as THREE.SpotLight | null,
+    cyanSpotlight: null as THREE.SpotLight | null,
+    containerRef
+  }
   
-  // Configure shadow camera for the light
-  directionalLight.shadow.camera.left = -2
-  directionalLight.shadow.camera.right = 2
-  directionalLight.shadow.camera.top = 2
-  directionalLight.shadow.camera.bottom = -2
-  directionalLight.shadow.camera.near = 0.1
-  directionalLight.shadow.camera.far = 10
-  directionalLight.shadow.mapSize.width = 2048
-  directionalLight.shadow.mapSize.height = 2048
-  directionalLight.shadow.bias = -0.0001
+  // Setup lighting using the module
+  setupLighting(lightingState)
   
-  scene.add(directionalLight)
-  
-  // Store light reference for updating shader uniforms
-  ;(scene as any).directionalLight = directionalLight
-  
-  // Add ambient light for overall illumination
-  const ambientLight = new THREE.AmbientLight(0xffffff, 0.3)
-  scene.add(ambientLight)
+  // Get the lights from the state
+  yellowSpotlight = lightingState.yellowSpotlight
+  magentaSpotlight = lightingState.magentaSpotlight
+  cyanSpotlight = lightingState.cyanSpotlight
 
   // Camera setup
   camera = new THREE.PerspectiveCamera(
@@ -356,9 +359,7 @@ const create3DText = () => {
         transparent: true,
         opacity: 0.8,
         metalness: 0.1,
-        roughness: 0.3,
-        emissive: new THREE.Color(0xffff66), // Make text emissive for glow
-        emissiveIntensity: 0.5 // Strong glow on text
+        roughness: 0.3
       })
       
       // Create mesh
@@ -400,9 +401,7 @@ const create3DText = () => {
         transparent: true,
         opacity: 0.8,
         metalness: 0.1,
-        roughness: 0.3,
-        emissive: new THREE.Color(0xffff00),
-        emissiveIntensity: 0.5
+        roughness: 0.3
       })
       workTextMesh = new THREE.Mesh(workGeometry, workMaterial)
       workTextMesh.castShadow = true
@@ -429,9 +428,7 @@ const create3DText = () => {
         transparent: true,
         opacity: 0.8,
         metalness: 0.1,
-        roughness: 0.3,
-        emissive: new THREE.Color(0x00ffff),
-        emissiveIntensity: 0.5
+        roughness: 0.3
       })
       cvTextMesh = new THREE.Mesh(cvGeometry, cvMaterial)
       cvTextMesh.castShadow = true
@@ -458,9 +455,7 @@ const create3DText = () => {
         transparent: true,
         opacity: 0.8,
         metalness: 0.1,
-        roughness: 0.3,
-        emissive: new THREE.Color(0xff00ff),
-        emissiveIntensity: 0.5
+        roughness: 0.3
       })
       contactTextMesh = new THREE.Mesh(contactGeometry, contactMaterial)
       contactTextMesh.castShadow = true
@@ -486,9 +481,7 @@ const create3DText = () => {
         transparent: true,
         opacity: 0, // Start hidden
         metalness: 0.1,
-        roughness: 0.3,
-        emissive: new THREE.Color(0x00ff00),
-        emissiveIntensity: 0.5
+        roughness: 0.3
       })
       emailTextMesh = new THREE.Mesh(emailGeometry, emailMaterial)
       emailTextMesh.castShadow = true
@@ -792,9 +785,7 @@ const imageToParticles = async (imageUrl: string): Promise<THREE.InstancedMesh> 
         vertexColors: true,
         transparent: true,
         opacity: 0.9,
-        side: THREE.DoubleSide,
-        emissive: new THREE.Color(0x000000), // Base emissive
-        emissiveIntensity: 0.2 // Add some emissive glow
+        side: THREE.DoubleSide
       })
       
       // Inject instanceColor support into the standard material shader
@@ -823,9 +814,9 @@ const imageToParticles = async (imageUrl: string): Promise<THREE.InstancedMesh> 
       // Create instanced mesh
       const instancedMesh = new THREE.InstancedMesh(planeGeometry, material, particleCount)
       
-      // Enable shadow receiving on particles
+      // Enable shadow receiving on particles (but not casting)
       instancedMesh.receiveShadow = true
-      instancedMesh.castShadow = false
+      instancedMesh.castShadow = false // Particles don't cast shadows, only text does
       
       // Set instance colors attribute (Three.js will automatically use this with vertexColors: true)
       instancedMesh.geometry.setAttribute('instanceColor', new THREE.InstancedBufferAttribute(instanceColors, 3))
@@ -1764,9 +1755,7 @@ const createCVWords = () => {
           transparent: true,
           opacity: 0, // Start hidden
           metalness: 0.1,
-          roughness: 0.3,
-          emissive: new THREE.Color(color),
-          emissiveIntensity: 0.5
+          roughness: 0.3
         })
         
         const wordMesh = new THREE.Mesh(wordGeometry, wordMaterial)
@@ -1843,47 +1832,13 @@ const animate = () => {
       ].filter(Boolean) as THREE.Mesh[]
       const intersects = raycaster.intersectObjects(textMeshes)
     
-    // Reset all text emissive intensities (only for visible items)
-    if (textMesh && !showingCV) {
-      const material = textMesh.material as THREE.MeshStandardMaterial
-      material.emissiveIntensity = 0.5
-    }
-    if (!showingEmail && !showingCV) {
-      // Only reset menu items if menu is showing
-      if (workTextMesh) {
-        const material = workTextMesh.material as THREE.MeshStandardMaterial
-        material.emissiveIntensity = 0.5
-      }
-      if (cvTextMesh) {
-        const material = cvTextMesh.material as THREE.MeshStandardMaterial
-        material.emissiveIntensity = 0.5
-      }
-      if (contactTextMesh) {
-        const material = contactTextMesh.material as THREE.MeshStandardMaterial
-        material.emissiveIntensity = 0.5
-      }
-    }
-    if (showingEmail && emailTextMesh) {
-      // Only reset email if email is showing
-      const material = emailTextMesh.material as THREE.MeshStandardMaterial
-      material.emissiveIntensity = 0.5
-    }
-    if (showingCV) {
-      // Reset CV words
-      cvTextMeshes.forEach(mesh => {
-        const material = mesh.material as THREE.MeshStandardMaterial
-        material.emissiveIntensity = 0.5
-      })
-    }
-    
-    // Update cursor and glow for hovered text (only if visible)
+    // Update cursor for hovered text (only if visible)
     if (intersects.length > 0) {
       const hoveredMesh = intersects[0]!.object as THREE.Mesh
       const material = hoveredMesh.material as THREE.MeshStandardMaterial
       
-      // Only glow if the mesh is visible (opacity > 0 and scale > 0)
+      // Only show cursor if the mesh is visible (opacity > 0 and scale > 0)
       if (material.opacity > 0.1 && hoveredMesh.scale.x > 0.1) {
-        material.emissiveIntensity = 2.0 // Much brighter on hover
         
         // Change cursor to pointer
         if (containerRef.value) {
@@ -1898,6 +1853,17 @@ const animate = () => {
     }
   }
 
+  // Animate the three spotlights using the lighting module
+  if (yellowSpotlight && magentaSpotlight && cyanSpotlight) {
+    animateLighting({
+      scene,
+      yellowSpotlight,
+      magentaSpotlight,
+      cyanSpotlight,
+      containerRef
+    })
+  }
+  
   // Apply rotation to camera (but maintain zoom level)
   // Always apply rotation, regardless of transition state
   const autoRotateX = Math.sin(Date.now() * 0.0001) * 2
